@@ -54,6 +54,10 @@ class PipeReplacementTool:
         self.damage_shapefile = None
 
         self.fishnet_index = None
+        self.select_square_size = None
+        self.weight_avg_combined_metric = None
+        self.weight_failures = None
+        self.step2_output_path = None
 
         self.step1_result_shapefile = None
 
@@ -253,6 +257,25 @@ class PipeReplacementTool:
                 )
             ],
             [sg.Text("Calculating ...", key="-CALC Message-", visible=False)],
+            [sg.Text("", key="-Best Square Size-", visible=False)],
+            [
+                sg.Push(),
+                sg.Text(
+                    "Select custom square size",
+                    key="-Custom Square Size Label-",
+                    visible=False,
+                ),
+                sg.Slider(
+                    range=(100, 1000),
+                    resolution=100,
+                    orientation="h",
+                    key="-Custom Square Size-",
+                    enable_events=True,
+                    default_value=1000,
+                    visible=False,
+                ),
+            ],
+            [sg.Button("Continue Calculations", key="-CONTINUE-", visible=False)],
             [sg.Button("Proceed to Step 3", key="-PROCEED-", visible=False)],
         ]
 
@@ -265,6 +288,34 @@ class PipeReplacementTool:
             if event == "-PROCEED-":
                 step2_window.close()
                 break
+            if event == "-CONTINUE-":
+                self.select_square_size = values["-Custom Square Size-"]
+                # Output --> σώζεται ένα shp file στο output path
+                (sorted_fishnet_df, results_pipe_clusters, fishnet_index) = (
+                    local_spatial_autocorrelation(
+                        pipe_shapefile_path=self.step1_result_shapefile,
+                        failures_shapefile_path=self.damage_shapefile,
+                        weight_avg_combined_metric=self.weight_avg_combined_metric,
+                        weight_failures=self.weight_failures,
+                        select_square_size=self.select_square_size,
+                        output_path=self.step2_output_path,
+                    )
+                )  ##same output path with Usage (1)
+
+                self.fishnet_index = fishnet_index
+
+                print("Sorted fishnet df: ", sorted_fishnet_df)
+                print("Results pipe clusters: ", results_pipe_clusters)
+
+                step2_window["-PROCEED-"].update(visible=True)
+                step2_window.refresh()
+                self.step2_completed = True
+
+                # Update the main window to enable the next step
+                self.window["-STEP1-"].update(disabled=True)
+                self.window["-STEP2-"].update(disabled=True)
+                self.window["-STEP3-"].update(disabled=False)
+
             if event == "-CALCULATE-":
                 weight_avg_combined_metric = values["-Weighted Average-"]
                 failures_weight = values["-Failures Weight-"]
@@ -301,6 +352,7 @@ class PipeReplacementTool:
                         # f"Fishnet_Grids_{timestamp}",
                         "",
                     )
+
                     results, best_square_size = spatial_autocorrelation_analysis(
                         pipe_shapefile_path=self.step1_result_shapefile,
                         failures_shapefile_path=self.damage_shapefile,
@@ -313,35 +365,25 @@ class PipeReplacementTool:
                     print("Results: ", results)
                     print("Best square size: ", best_square_size)
 
-                    ### (εδώ να βγαίνει μήνυμα που να τον ρωτάει αν θα κρατάει αυτό ή να βάλει δικό του)
-                    select_square_size = best_square_size
-
-                    # Output --> σώζεται ένα shp file στο output path
-                    (sorted_fishnet_df, results_pipe_clusters, fishnet_index) = (
-                        local_spatial_autocorrelation(
-                            pipe_shapefile_path=self.step1_result_shapefile,
-                            failures_shapefile_path=self.damage_shapefile,
-                            weight_avg_combined_metric=weight_avg_combined_metric,
-                            weight_failures=failures_weight,
-                            select_square_size=select_square_size,
-                            output_path=output_path,
-                        )
-                    )  ##same output path with Usage (1)
-
-                    self.fishnet_index = fishnet_index
-
-                    print("Sorted fishnet df: ", sorted_fishnet_df)
-                    print("Results pipe clusters: ", results_pipe_clusters)
-
                     step2_window["-CALC Message-"].update(visible=False)
-                    step2_window["-PROCEED-"].update(visible=True)
-                    step2_window.refresh()
-                    self.step2_completed = True
 
-                    # Update the main window to enable the next step
-                    self.window["-STEP1-"].update(disabled=True)
-                    self.window["-STEP2-"].update(disabled=True)
-                    self.window["-STEP3-"].update(disabled=False)
+                    # Passing the local variables to the class variables
+                    # to use them in the next steps
+                    self.weight_avg_combined_metric = weight_avg_combined_metric
+                    self.weight_failures = failures_weight
+                    self.step2_output_path = output_path
+
+                    # Ask the user if they want to keep the best square size or input a custom one
+                    step2_window["-Best Square Size-"].update(
+                        f"Best square size: {best_square_size}", visible=True
+                    )
+                    step2_window["-Custom Square Size Label-"].update(visible=True)
+                    step2_window["-Custom Square Size-"].update(best_square_size)
+                    step2_window["-Custom Square Size-"].update(visible=True)
+                    step2_window["-CONTINUE-"].update(visible=True)
+
+                    ### (εδώ να βγαίνει μήνυμα που να τον ρωτάει αν θα κρατάει αυτό ή να βάλει δικό του)
+                    self.select_square_size = best_square_size
 
     def create_new_project(self):
         layout = [
