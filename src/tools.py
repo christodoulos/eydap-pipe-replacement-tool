@@ -671,7 +671,7 @@ def local_spatial_autocorrelation(
 
     # Perform the local spatial autocorrelation analysis
     y = fishnet_failures["weighted_avg"]
-    w = lps.weights.Queen.from_dataframe(fishnet_failures, use_index=False)
+    w = lps.weights.Queen.from_dataframe(fishnet_failures)
     w.transform = "r"
     # Local spatial autocorrelation with Local Indicators of Spatial Association (LISA) statistics
     # While the global spatial autocorrelation can prove the existence of clusters,
@@ -762,31 +762,6 @@ def local_spatial_autocorrelation(
     for fishnet_index, group_data in grouped:
         pipe_labels = group_data["LABEL"].tolist()
         results_pipe_clusters[fishnet_index] = pipe_labels
-
-    # final details
-    sorted_fishnet_df["failures"] = sorted_fishnet_df["failures"].round(0)
-    sorted_fishnet_df["avg_combined_metric"] = sorted_fishnet_df[
-        "avg_combined_metric"
-    ].round(3)
-    sorted_fishnet_df["weighted_avg"] = sorted_fishnet_df["weighted_avg"].round(3)
-    sorted_fishnet_df["failures_standardized"] = sorted_fishnet_df[
-        "failures_standardized"
-    ].round(3)
-    sorted_fishnet_df["Local Moran's I (LISA)"] = sorted_fishnet_df[
-        "Local Moran's I (LISA)"
-    ].round(3)
-    sorted_fishnet_df = sorted_fishnet_df.drop(
-        ["weighted_fail", "fishnet_index"], axis=1
-    )
-    sorted_fishnet_df = sorted_fishnet_df.rename(
-        columns={
-            "avg_combined_metric": "top_metric",
-            "failures_standardized": "stand_fail",
-            "weighted_avg": "metric_com",
-            "Cluster_Label": "Label",
-            "Local Moran's I (LISA)": "localmoran",
-        }
-    )
 
     # final details
     fishnet_index = sorted_fishnet_df["fishnet_index"]  # <-- Nees allages
