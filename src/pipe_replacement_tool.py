@@ -1,9 +1,7 @@
-from datetime import datetime
 import PySimpleGUI as sg
 import os
 
-import pytz
-from src.utils import is_valid_project_name, copy_shapefile, shapefile_bare_name
+from src.utils import is_valid_project_name, copy_shapefile
 from src.tools import (
     process_shapefile,
     plot_metrics,
@@ -11,6 +9,12 @@ from src.tools import (
     spatial_autocorrelation_analysis,
     local_spatial_autocorrelation,
 )
+
+import ctypes
+import platform
+
+if platform.system() == "Windows":
+    ctypes.windll.shcore.SetProcessDpiAwareness(1)
 
 
 class PipeReplacementTool:
@@ -45,9 +49,7 @@ class PipeReplacementTool:
             icon="icon.ico",
         )
 
-        self.projects_folder = os.path.join(
-            os.path.expanduser("~"), "Pipe Replacement Tool Projects"
-        )
+        self.projects_folder = os.path.join(os.path.expanduser("~"), "Pipe Replacement Tool Projects")
 
         self.project_name = None
         self.network_shapefile = None
@@ -152,9 +154,7 @@ class PipeReplacementTool:
                 total = closeness_weight + betweenness_weight + bridge_weight
 
                 if not (0.99 <= total <= 1.01):
-                    sg.popup_error(
-                        "The sum of all sliders must be 1. Please adjust the sliders."
-                    )
+                    sg.popup_error("The sum of all sliders must be 1. Please adjust the sliders.")
                 else:
                     step1_window["-CALC Message-"].update(visible=True)
                     step1_window.refresh()
@@ -291,22 +291,20 @@ class PipeReplacementTool:
             if event == "-CONTINUE-":
                 self.select_square_size = values["-Custom Square Size-"]
                 # Output --> σώζεται ένα shp file στο output path
-                (sorted_fishnet_df, results_pipe_clusters, fishnet_index) = (
-                    local_spatial_autocorrelation(
-                        pipe_shapefile_path=self.step1_result_shapefile,
-                        failures_shapefile_path=self.damage_shapefile,
-                        weight_avg_combined_metric=self.weight_avg_combined_metric,
-                        weight_failures=self.weight_failures,
-                        select_square_size=self.select_square_size,
-                        output_path=self.step2_output_path,
-                    )
-                )  ##same output path with Usage (1)
+                sorted_fishnet_df, results_pipe_clusters, fishnet_index = local_spatial_autocorrelation(
+                    pipe_shapefile_path=self.step1_result_shapefile,
+                    failures_shapefile_path=self.damage_shapefile,
+                    weight_avg_combined_metric=self.weight_avg_combined_metric,
+                    weight_failures=self.weight_failures,
+                    select_square_size=self.select_square_size,
+                    output_path=self.step2_output_path,
+                )
 
                 self.fishnet_index = fishnet_index
 
                 print("Sorted fishnet df: ", sorted_fishnet_df)
                 print("Results pipe clusters: ", results_pipe_clusters)
-
+                step2_window["-CONTINUE-"].update(visible=False)
                 step2_window["-PROCEED-"].update(visible=True)
                 step2_window.refresh()
                 self.step2_completed = True
@@ -324,18 +322,11 @@ class PipeReplacementTool:
                 total = weight_avg_combined_metric + failures_weight
 
                 if total != 1:
-                    sg.popup_error(
-                        "The sum of all sliders must be 1. Please adjust the sliders."
-                    )
+                    sg.popup_error("The sum of all sliders must be 1. Please adjust the sliders.")
                 else:
+                    bounds = (cell_lower_bound, cell_upper_bound)
                     step2_window["-CALC Message-"].update(visible=True)
                     step2_window.refresh()
-
-                    # Define the GMT+2 timezone
-                    gmt_greece = pytz.timezone("Etc/GMT-2")
-
-                    # Get the current date and time
-                    timestamp = datetime.now(gmt_greece).strftime("%Y%m%d_%H%M%S")
 
                     os.makedirs(
                         os.path.join(
@@ -349,7 +340,6 @@ class PipeReplacementTool:
                         self.projects_folder,
                         self.project_name,
                         "Fishnet_Grids",
-                        # f"Fishnet_Grids_{timestamp}",
                         "",
                     )
 
@@ -374,12 +364,10 @@ class PipeReplacementTool:
                     self.step2_output_path = output_path
 
                     # Ask the user if they want to keep the best square size or input a custom one
-                    step2_window["-Best Square Size-"].update(
-                        f"Best square size: {best_square_size}", visible=True
-                    )
+                    step2_window["-CALCULATE-"].update(visible=False)
+                    step2_window["-Best Square Size-"].update(f"Best square size: {best_square_size}", visible=True)
                     step2_window["-Custom Square Size Label-"].update(visible=True)
-                    step2_window["-Custom Square Size-"].update(best_square_size)
-                    step2_window["-Custom Square Size-"].update(visible=True)
+                    step2_window["-Custom Square Size-"].update(best_square_size, range=bounds, visible=True)
                     step2_window["-CONTINUE-"].update(visible=True)
 
                     ### (εδώ να βγαίνει μήνυμα που να τον ρωτάει αν θα κρατάει αυτό ή να βάλει δικό του)
@@ -415,12 +403,8 @@ class PipeReplacementTool:
                     project_folder = os.path.join(self.projects_folder, project_name)
                     os.makedirs(project_folder, exist_ok=True)
 
-                    self.network_shapefile = copy_shapefile(
-                        "network", network_shapefile_path, project_folder
-                    )
-                    self.damage_shapefile = copy_shapefile(
-                        "damage", damage_shapefile_path, project_folder
-                    )
+                    self.network_shapefile = copy_shapefile("network", network_shapefile_path, project_folder)
+                    self.damage_shapefile = copy_shapefile("damage", damage_shapefile_path, project_folder)
 
                 else:
                     sg.popup("Invalid project name. Please try again.")
