@@ -1,18 +1,13 @@
 import PySimpleGUI as sg
+from src.utils import *
 import os
-
-from src.utils import is_valid_project_name, copy_shapefile
-from src.tools import (
-    process_shapefile,
-    plot_metrics,
-    save_edge_gdf_shapefile,
-    spatial_autocorrelation_analysis,
-    local_spatial_autocorrelation,
-)
-
+from src.tools import *
 import ctypes
 import platform
+import warnings
 
+
+warnings.filterwarnings("ignore", category=FutureWarning)
 if platform.system() == "Windows":
     ctypes.windll.shcore.SetProcessDpiAwareness(1)
 
@@ -51,10 +46,25 @@ class PipeReplacementTool:
 
         self.projects_folder = os.path.join(os.path.expanduser("~"), "Pipe Replacement Tool Projects")
 
+        self.const_pipe_materials = {
+            'Asbestos Cement': 50,
+            'Steel': 40,
+            'PVC': 30,
+            'HDPE': 12, 
+            'Cast iron':40
+        }
+        
         self.project_name = None
         self.network_shapefile = None
         self.damage_shapefile = None
-
+        self.df_metrics = None
+        self.pipes_gdf_cell_merged = None
+        self.edges = None
+        self.unique_pipe_materials_names = None
+        self.pipe_materials = {}
+        self.path_fishnet = None
+        self.sorted_fishnet_df = None
+        self.results_pipe_clusters = None
         self.fishnet_index = None
         self.select_square_size = None
         self.weight_avg_combined_metric = None
@@ -75,17 +85,27 @@ class PipeReplacementTool:
 
             if self.network_shapefile and self.damage_shapefile:
                 self.window["-STEP1-"].update(disabled=False)
+                
+                if self.step1_completed:  # workaround to keep the step 1 button disabled
+                    self.window["-STEP1-"].update(disabled=False)
 
             if event == "-STEP1-":
                 self.step1()
 
             if event == "-STEP2-":
                 self.step2()
+                
+            if event == "-STEP3-":
+                self.step3()
+                
+            if event == "-STEP4-":
+                self.step4()
 
             if event == "Exit":
                 break
 
         self.window.close()
+
 
     def step1(self):
         layout = [
@@ -166,6 +186,8 @@ class PipeReplacementTool:
                         bridge_weight,
                         os.path.join(self.projects_folder, self.project_name, ""),
                     )
+                    self.edges = edges
+                    
                     plot_metrics(
                         gdf,
                         G,
@@ -187,10 +209,19 @@ class PipeReplacementTool:
                         edges,
                         output_path,
                     )
+                    
+                    step1_window["-CALCULATE-"].update(visible=False)
                     step1_window["-CALC Message-"].update(visible=False)
                     step1_window["-PROCEED-"].update(visible=True)
                     step1_window.refresh()
                     self.step1_completed = True
+                    self.df_metrics = df_metrics
+                    self.unique_pipe_materials_names = df_metrics['MATERIAL'].unique()
+                    
+                    for material_name in self.unique_pipe_materials_names:
+                        self.pipe_materials[material_name] = self.const_pipe_materials.get(material_name)
+                    
+                    print("MATERIALS" , self.pipe_materials)
                     self.step1_result_shapefile = output_path
                     print(self.step1_result_shapefile)
 
@@ -283,36 +314,13 @@ class PipeReplacementTool:
 
         while True:
             event, values = step2_window.read()
+            
             if event == sg.WINDOW_CLOSED:
                 break
+            
             if event == "-PROCEED-":
                 step2_window.close()
                 break
-            if event == "-CONTINUE-":
-                self.select_square_size = values["-Custom Square Size-"]
-                # Output --> σώζεται ένα shp file στο output path
-                sorted_fishnet_df, results_pipe_clusters, fishnet_index = local_spatial_autocorrelation(
-                    pipe_shapefile_path=self.step1_result_shapefile,
-                    failures_shapefile_path=self.damage_shapefile,
-                    weight_avg_combined_metric=self.weight_avg_combined_metric,
-                    weight_failures=self.weight_failures,
-                    select_square_size=self.select_square_size,
-                    output_path=self.step2_output_path,
-                )
-
-                self.fishnet_index = fishnet_index
-
-                print("Sorted fishnet df: ", sorted_fishnet_df)
-                print("Results pipe clusters: ", results_pipe_clusters)
-                step2_window["-CONTINUE-"].update(visible=False)
-                step2_window["-PROCEED-"].update(visible=True)
-                step2_window.refresh()
-                self.step2_completed = True
-
-                # Update the main window to enable the next step
-                self.window["-STEP1-"].update(disabled=True)
-                self.window["-STEP2-"].update(disabled=True)
-                self.window["-STEP3-"].update(disabled=False)
 
             if event == "-CALCULATE-":
                 weight_avg_combined_metric = values["-Weighted Average-"]
@@ -372,6 +380,203 @@ class PipeReplacementTool:
 
                     ### (εδώ να βγαίνει μήνυμα που να τον ρωτάει αν θα κρατάει αυτό ή να βάλει δικό του)
                     self.select_square_size = best_square_size
+
+            if event == "-CONTINUE-":
+                self.select_square_size = values["-Custom Square Size-"]
+                # Output --> σώζεται ένα shp file στο output path
+                sorted_fishnet_df, results_pipe_clusters, fishnet_index = local_spatial_autocorrelation(
+                    pipe_shapefile_path=self.step1_result_shapefile,
+                    failures_shapefile_path=self.damage_shapefile,
+                    weight_avg_combined_metric=self.weight_avg_combined_metric,
+                    weight_failures=self.weight_failures,
+                    select_square_size=self.select_square_size,
+                    output_path=self.step2_output_path,
+                )
+
+                self.sorted_fishnet_df = sorted_fishnet_df
+                self.results_pipe_clusters = results_pipe_clusters
+                self.fishnet_index = fishnet_index
+                
+                self.path_fishnet = os.path.join(
+                        self.projects_folder,
+                        self.project_name,
+                        "Fishnet_Grids",
+                        f"{self.select_square_size}_fishnets_sorted.shp",
+                    )
+                
+                print("Sorted fishnet df: ", sorted_fishnet_df)
+                print("Results pipe clusters: ", results_pipe_clusters)
+                step2_window["-CONTINUE-"].update(visible=False)
+                step2_window["-PROCEED-"].update(visible=True)
+                step2_window.refresh()
+                self.step2_completed = True
+
+                # Update the main window to enable the next step
+                self.window["-STEP1-"].update(disabled=True)
+                self.window["-STEP2-"].update(disabled=True)
+                self.window["-STEP3-"].update(disabled=False)
+                self.window["-STEP4-"].update(disabled=False)  # enable step 4 together with step 3 because optimization takes too long
+
+
+    def step3(self):
+        self.results_pipe_clusters = optimize_pipe_clusters(self.results_pipe_clusters, self.df_metrics, self.sorted_fishnet_df)
+        
+        os.makedirs(os.path.join(
+                        self.projects_folder,
+                        self.project_name,
+                        "Cell_optimization_results",
+                    ), exist_ok=True)
+        
+        layout = []
+        layout.append([sg.Text("Insert pipe materials and their lifespan", font=("Arial", 12, "bold"), justification="center")])
+        for material_name in self.unique_pipe_materials_names:
+            layout.append([sg.Push(), sg.Text(f"{material_name}: ", key=f"-{material_name} Label-"), sg.Input(key=f"-{material_name}-", default_text=str(self.pipe_materials[material_name]) if self.pipe_materials[material_name] else '')])
+
+        layout.append([
+                sg.Push(),
+                sg.Text("Insert lifespan of contract work:"),
+                sg.Slider(
+                    range=(5, 15),
+                    resolution=1,
+                    orientation="h",
+                    key="-Lifespan Contract Work-",
+                    enable_events=True,
+                    default_value=10,
+                ),
+            ])
+        
+        layout.append([
+                sg.Push(),
+                sg.Text("Allowable time span relaxation:"),
+                sg.Slider(
+                    range=(2, 5),
+                    resolution=1,
+                    orientation="h",
+                    key="-Lifespan-",
+                    enable_events=True,
+                    default_value=3,
+                ),
+            ])
+
+        layout.append([sg.Text("Select cell"), sg.Input(key="-Cell Index-")])
+        layout.append([sg.Button("Make calculations for the cell", key="-Calculate Cell-")],)
+        
+        layout.append([sg.Text("", key="-Calculation Message-")])
+
+        step3_window = sg.Window("Step 3", layout)
+
+        while True:
+            event, values = step3_window.read()
+            if event == sg.WINDOW_CLOSED:
+                self.window["-STEP1-"].update(disabled=True)
+                self.window["-STEP2-"].update(disabled=True)
+                self.window["-STEP3-"].update(disabled=False)
+                self.window["-STEP4-"].update(disabled=False)
+                break
+            
+            if event == "-Calculate Cell-":
+                step3_window["-Calculate Cell-"].update(disabled=True)
+                step3_window["-Calculation Message-"].update("Calculating ...")
+                
+                try:
+                    p_span = int(values["-Lifespan Contract Work-"])
+                    a_rel = int(values["-Lifespan-"])
+                    row_number_to_keep = int(values["-Cell Index-"])
+                    valid_input = True
+                except Exception:
+                    sg.popup("Please insert all required fields and try again")
+                    step3_window["-Calculation Message-"].update("")
+                    valid_input = False
+                
+                if valid_input:
+                    message, is_valid = check_items_in_key(self.results_pipe_clusters, self.fishnet_index, row_number_to_keep)
+                    
+                    if not is_valid: sg.popup(message)
+                    
+                    else:
+                        # Input is valid, we proceed with the calculations
+                        os.makedirs(os.path.join(
+                            self.projects_folder,
+                            self.project_name,
+                            "Cell_optimization_results",
+                            f"Cell_Priority_{row_number_to_keep}"
+                        ), exist_ok=True)
+                    
+                        # Run functions
+                        pipes_gdf_cell = process_pipes_cell_data(self.step1_result_shapefile , self.path_fishnet, self.fishnet_index, 
+                                                                row_number_to_keep, self.results_pipe_clusters, self.pipe_materials)
+
+                        pipe_table_trep, LLCCn, ann_budg, xl, xu = calculate_investment_timeseries(pipes_gdf_cell, p_span, 50, a_rel)
+                        print("Pre-optimization part is done.")
+                        
+                        # Run optimization
+                        # number of pipes in this cell
+                        number_of_pipes = pipe_table_trep.count()[0]
+
+                        # define 3 hyperparameters for optimization 
+                        pop_size = int(round((7.17*number_of_pipes - 1.67),-1)) # linear equation going through (10,70) and (70,500)
+                        n_gen = int(round((1.33*number_of_pipes + 6.67),-1)) # linear equation going through (70,100) and (10,20)
+                        n_offsprings = int(max(round((pop_size/5),-1),5))
+
+                        problem = MyProblem(pipe_table_trep, p_span, LLCCn, xl, xu)
+
+                        algorithm = NSGA2(
+                            pop_size= pop_size, 
+                            n_offsprings= n_offsprings,
+                            sampling=IntegerRandomSampling(),
+                            crossover=SBX(prob=0.9, eta=15, repair=RoundingRepair()),
+                            mutation=PM(eta=20, repair=RoundingRepair()),
+                            eliminate_duplicates=True
+                        )
+                        sg.Print('', do_not_reroute_stdout=False)
+                        
+                        print("Before optimization")
+                        res = minimize(problem,
+                                    algorithm,
+                                    seed=1,
+                                    # termination=('n_gen', n_gen), # p.x. 5 
+                                    termination=('n_gen', 2),
+                                    save_history=True,
+                                    verbose=True)
+                        print("After optimization")
+                        X = res.X
+                        F = res.F
+
+                        # Run function for making final geodataframe
+                        pipes_gdf_cell_merged = manipulate_opt_results(self.edges, X, F, pipe_table_trep, pipes_gdf_cell)
+                        self.pipes_gdf_cell_merged = pipes_gdf_cell_merged
+
+                        pre_path = os.path.join(
+                            self.projects_folder,
+                            self.project_name,
+                            "Cell_optimization_results",
+                            f"Cell_Priority_{row_number_to_keep}"
+                        )
+                        # Save the shape file into Cell_optimization_results/Cell_Priority_#
+                        pipes_gdf_cell_merged.to_file(pre_path + f'/Priority_{row_number_to_keep}_cell_optimal_replacement.shp')
+                        step3_window["-Calculation Message-"].update(f"Calculation for Cell {row_number_to_keep} is finished.\nContinue with another cell or close the window and proceed to step 4.")
+                        
+                step3_window["-Calculate Cell-"].update(disabled=False)
+
+
+    def step4(self):
+        layout = [
+            [sg.Text("Select Cell Priority shapefile")],
+            [sg.Input(), sg.FileBrowse(file_types=(("Shapefiles", "*.shp"),), key="-Cell Priority-")],
+            
+            [sg.Column([[sg.Button("Calculate")]], justification="center")],
+        ]
+
+        step4_window = sg.Window("Step 4", layout)
+
+        while True:
+            event, values = step4_window.read()
+            if event == sg.WINDOW_CLOSED:
+                break
+            if event == "Calculate":
+                cell_priority_shapefile = values["-Cell Priority-"]
+                print("Cell Priority shapefile: ", cell_priority_shapefile)
+
 
     def create_new_project(self):
         layout = [

@@ -7,6 +7,7 @@ from shapely import geometry
 import libpysal as lps
 from esda.moran import Moran, Moran_Local
 from splot.esda import lisa_cluster
+from kneed import KneeLocator
 import matplotlib.pyplot as plt
 import matplotlib.ticker as ticker
 from copy import deepcopy
@@ -16,6 +17,7 @@ from pymoo.operators.crossover.sbx import SBX
 from pymoo.operators.mutation.pm import PM
 from pymoo.operators.sampling.rnd import FloatRandomSampling
 from pymoo.operators.sampling.rnd import IntegerRandomSampling
+from typing import List, Union, TypedDict, Tuple
 from pymoo.operators.repair.rounding import RoundingRepair
 from pymoo.optimize import minimize
 import pickle
@@ -803,3 +805,427 @@ def local_spatial_autocorrelation(
     )
 
     return sorted_fishnet_df, results_pipe_clusters, fishnet_index
+
+
+def optimize_pipe_clusters(results_pipe_clusters, df_metrics, sorted_fishnet_df):
+    
+    # Convert the clusters to a dictionary with pipes as keys and clusters as values
+    pipe_to_clusters = {}
+    for key, pipes in results_pipe_clusters.items():
+        for pipe in pipes:
+            if pipe not in pipe_to_clusters:
+                pipe_to_clusters[pipe] = []
+            pipe_to_clusters[pipe].append(key)
+
+    def get_highest_priority_cluster(pipe, clusters, metric_com_df):
+        # Extract the metric_com values for the clusters
+        cluster_priorities = metric_com_df.loc[clusters, 'metric_com']
+        # Return the cluster with the highest metric_com
+        return cluster_priorities.idxmax()
+
+    # Go through each pipe in df_metrics and determine the highest priority cluster
+    for pipe in df_metrics['LABEL']:
+        if pipe in pipe_to_clusters:
+            # Get all clusters the pipe is part of
+            clusters = pipe_to_clusters[pipe]
+            if len(clusters) > 1:
+                # More than one cluster, so we need to find out which one has the highest priority
+                highest_priority_cluster = get_highest_priority_cluster(pipe, clusters, sorted_fishnet_df)
+                # Keep the pipe only in the highest priority cluster
+                for cluster in clusters:
+                    if cluster != highest_priority_cluster:
+                        results_pipe_clusters[cluster].remove(pipe)
+
+    # Optionally, return updated results_pipe_clusters if needed
+    return results_pipe_clusters
+
+
+def process_pipes_cell_data(path_pipes, path_fishnet, fishnet_index, row_number_to_keep, results_pipe_clusters, pipe_materials):
+    # Read pipes data and set coordinate reference system
+    pipes_gdf = gpd.read_file(path_pipes).set_crs('EPSG:2100')
+
+    # Read fishnet data and set coordinate reference system
+    fishnet_gdf = gpd.read_file(path_fishnet).set_crs('EPSG:2100')
+
+    # Extract the specific row based on the row number
+    cell_index = fishnet_index.iloc[row_number_to_keep - 1]
+
+    # Get the list of pipes contained in the specific cell
+    pipes_cell = results_pipe_clusters[cell_index]
+
+    # Create a dataframe containing only the pipes of the specific cell
+    pipes_gdf_cell = pipes_gdf[pipes_gdf['LABEL'].isin(pipes_cell)]
+
+    # Reset the index of the dataframe
+    pipes_gdf_cell = pipes_gdf_cell.reset_index(drop=True)
+
+    # Fill a new column with the pipe age
+    pipes_gdf_cell['Pipe Age'] = pipes_gdf_cell['MATERIAL'].map(pipe_materials)
+
+    # Select specific columns for the dataframe
+    pipes_gdf_cell = pipes_gdf_cell[['D', 'LABEL', 'MATERIAL', 'USER_L', 'Pipe Age', 'ID']]
+
+    return pipes_gdf_cell
+
+
+def calculate_investment_timeseries(pipes_gdf_cell, p_span, perc_inc, a_rel):
+    # Calculate replacement time array
+    repl_time_array = np.random.randint(1, p_span + 1, size=len(pipes_gdf_cell['ID']))
+
+    # Initialize the pipe table
+    pipe_table_trep = deepcopy(pipes_gdf_cell)
+    pipe_table_trep['t_rep'] = np.nan
+    pipe_table_trep['LCC_min'] = np.nan
+
+    # Process each pipe for optimal replacement age and minimum LCC
+    for i in range(len(pipe_table_trep.index)):
+        p_id = pipe_table_trep.loc[i, 'ID']
+        p_age = pipe_table_trep.loc[pipe_table_trep['ID'] == p_id, 'Pipe Age'].iloc[0]
+        p_diam = pipe_table_trep.loc[pipes_gdf_cell['ID'] == p_id, 'D'].iloc[0]
+        p_len = pipe_table_trep.loc[pipe_table_trep['ID'] == p_id, 'USER_L'].iloc[0]
+        p_CP = (0.0005066289 * p_diam**2 + 0.2041100332 * p_diam + 212.9637728607) * 1000
+        p_Cr = 1.3 * (p_diam / 304.8)**0.62 * 800
+
+        t_res = single_opt_age(p_id, p_age, p_diam, p_CP, p_Cr, p_span)
+        pipe_table_trep.loc[i, 't_rep'] = t_res[0]
+        pipe_table_trep.loc[i, 'LCC_min'] = t_res[1]
+
+    # Calculate least life cycle cost of the network
+    pipe_table_trep['LCCmultL'] = pipe_table_trep['USER_L'] / 1000 * pipe_table_trep['LCC_min']
+    LLCCn = pipe_table_trep['LCCmultL'].sum()
+
+    # Set up the boundaries for each variable
+    x_base = pipe_table_trep['t_rep'].to_numpy()
+    xl = x_base - a_rel
+    xl[xl <= 0] = 1
+    xu = x_base + a_rel
+    xu[xu > p_span] = p_span
+
+    # Calculate available yearly budget
+    ann_budg = (1 + perc_inc / 100) * LLCCn
+
+    return pipe_table_trep, LLCCn, ann_budg, xl, xu
+
+
+# Create function to find the ideal optimal replacement age of a single pipe
+def single_opt_age(pipe_id, pipe_age, pipe_diam, CP, Cr, time_span):
+    # pipe_id: the id of the pipe
+    # pipe_age: the pipe age at the beginning of the planning period (years)
+    # pipe_diam: the pipe diameter (mm)
+    # CP:the pipe replacement cost (€/km)
+    # Cr: the pipe repair cost (€/failure)
+
+    #create empty data frame containing the necessary columns
+    p_df = pd.DataFrame(index=range(1, time_span + 1),
+                                    columns=['CI', 'Age', 'Fr',
+                                             'SFr/t', 'CR', 'LCC'])
+    #fill the columns with the respective values
+    for i in range(1, time_span +1):
+        p_df.loc[i, 'Age'] = pipe_age + i
+        p_df.loc[i, 'CI'] = CP/p_df.loc[i, 'Age']
+        p_df.loc[i, 'Fr'] = 0.109 * math.e ** \
+                            (-0.0064*pipe_diam) * \
+                            p_df.loc[i, 'Age'] ** 1.377
+        p_df.loc[i, 'SFr/t'] = p_df['Fr'].loc[:i].sum()/i
+        p_df.loc[i, 'CR'] = p_df.loc[i, 'SFr/t'] * Cr
+        p_df.loc[i, 'LCC'] = p_df.loc[i, 'CI'] + p_df.loc[i, 'CR']
+    t_star = pd.to_numeric(p_df['LCC'], downcast='float').idxmin()
+    #return optimal replacement time for single pipe
+    return t_star, p_df['LCC'].min()
+   
+    
+# Create function to find the ideal LCC of a single pipe at time t
+def single_opt_lcc(pipe_id, pipe_age, pipe_diam, CP, Cr,time_span, t):
+    # pipe_id: the id of the pipe
+    # pipe_age: the pipe age at the beginning of the planning period (years)
+    # pipe_diam: the pipe diameter (mm)
+    # CP: the pipe replacement cost (€/km)
+    # Cr: the pipe repair cost (€/failure)
+
+    #create empty data frame containing the necessary columns
+    p_df = pd.DataFrame(index=range(1, time_span + 1),
+                                    columns=['CI', 'Age', 'Fr',
+                                             'SFr/t', 'CR', 'LCC'])
+    #fill the columns with the respective values
+    for i in range(1, time_span +1):
+        p_df.loc[i, 'Age'] = pipe_age + i
+        p_df.loc[i, 'CI'] = CP/p_df.loc[i, 'Age']
+        p_df.loc[i, 'Fr'] = 0.109 * math.e ** \
+                            (-0.0064*pipe_diam) * \
+                            p_df.loc[i, 'Age'] ** 1.377
+        p_df.loc[i, 'SFr/t'] = p_df['Fr'].loc[:i].sum()/i
+        p_df.loc[i, 'CR'] = p_df.loc[i, 'SFr/t'] * Cr
+        p_df.loc[i, 'LCC'] = p_df.loc[i, 'CI'] + p_df.loc[i, 'CR']
+
+    return p_df.loc[t, 'LCC']        
+
+
+def lcc_tot_net(repl_time_array, pipe_table, time_span):
+    t_rep_count = 0
+    lcc_tot = 0
+    for p_id in pipe_table['ID']:
+        t_rep = repl_time_array[t_rep_count]
+        p_age = pipe_table.loc[pipe_table['ID'] == p_id, 'Pipe Age'].iloc[0]
+        p_diam = pipe_table.loc[pipe_table['ID'] == p_id, 'D'].iloc[0]
+        p_len = pipe_table.loc[pipe_table['ID'] == p_id, 'USER_L'].iloc[0]
+        # pipe replacement cost based on an inteprolated polyonym of the replacement cost and the connection cost (€/km)
+        p_CP = (0.0005066289 * p_diam**2 + 0.2041100332 * p_diam + 212.9637728607) * 1000
+        p_Cr = 1.3*(p_diam/304.8)**0.62*800
+
+
+        p_lcc = single_opt_lcc(p_id, p_age, p_diam, p_CP, p_Cr, time_span, t_rep)*p_len/1000
+
+        lcc_tot = lcc_tot + p_lcc
+
+        t_rep_count =  t_rep_count + 1
+
+    return  lcc_tot    
+
+
+#Create function to calculate the single pipe life cycle costs data frame when pipe is replaced at time t_rep
+def single_opt_age_rep(pipe_id, pipe_age, pipe_diam, CP, Cr, time_span, t_rep):
+    #create empty data frame containing the necessary columns
+    p_df = pd.DataFrame(index=range(1, time_span + 1),
+                                    columns=['CI', 'Age', 'Fr',
+                                             'SFr/t', 'CR', 'LCC'])
+    #t_rep = single_opt_age(pipe_id, pipe_age, pipe_diam, CP, Cr, time_span)[0]
+    #fill the columns with the respective values
+    for i in range(1, time_span +1):
+        if i <= t_rep:
+            p_df.loc[i, 'Age'] = pipe_age + i
+            p_df.loc[i, 'CI'] = CP/p_df.loc[i, 'Age']
+            p_df.loc[i, 'Fr'] = 0.109 * math.e ** \
+                                (-0.0064*pipe_diam) * \
+                                p_df.loc[i, 'Age'] ** 1.377
+        else:
+            p_df.loc[i, 'Age'] = i - t_rep
+            p_df.loc[i, 'CI'] = CP/(i - t_rep)
+            p_df.loc[i, 'Fr'] = 0.109 * math.e ** \
+                                (-0.0064*pipe_diam) * \
+                                p_df.loc[i, 'Age'] ** 1.377
+        p_df.loc[i, 'SFr/t'] = p_df['Fr'].loc[:i].sum()/i
+        p_df.loc[i, 'CR'] = p_df.loc[i, 'SFr/t'] * Cr
+        p_df.loc[i, 'LCC'] = p_df.loc[i, 'CI'] + p_df.loc[i, 'CR']
+    
+    #return cost data frame
+    return p_df
+    
+    
+def investment_series(repl_time_array, pipe_table, p_span):
+    # repl_time_array: array containing the replacement time for each pipe
+    # pipe_table: data frame containing the pipe data
+    lcc_table = pd.DataFrame(index=range(1, p_span + 1),
+                                    columns=pipe_table['ID'],
+                                    data = np.nan)
+    t_rep_count = 0
+    for p_id in pipe_table['ID']:
+        t_rep = repl_time_array[t_rep_count]
+        p_age = pipe_table.loc[pipe_table['ID'] == p_id, 'Pipe Age'].iloc[0]
+        p_diam = pipe_table.loc[pipe_table['ID'] == p_id, 'D'].iloc[0]
+        p_len = pipe_table.loc[pipe_table['ID'] == p_id, 'USER_L'].iloc[0]
+        p_CP = (0.0005066289 * p_diam**2 + 0.2041100332 * p_diam + 212.9637728607) * 1000
+        p_Cr = 1.3*(p_diam/304.8)**0.62*800
+
+        p_df = single_opt_age_rep(p_id, p_age, p_diam, p_CP, p_Cr, p_span, t_rep)
+
+        lcc_table[p_id] = p_df['LCC'] * (p_len/1000)
+
+        t_rep_count =  t_rep_count + 1
+
+    lcc_series = lcc_table.sum(axis=1)
+
+    return lcc_series, lcc_table
+ 
+    
+def check_items_in_key(dictionary, fishnet_index, row_number_to_keep) -> Tuple[str, bool]:
+    try:
+        # Attempt to obtain cell_index
+        cell_index = fishnet_index.iloc[row_number_to_keep - 1]
+    except IndexError:
+        # If row_number_to_keep is out of bounds
+        return f"Η γραμμή {row_number_to_keep} δεν υπάρχει στο shapefile.", False #ξαναβαλε
+    except Exception as e:
+        # Handle other potential errors
+        return f"Προέκυψε σφάλμα: {e}", False
+
+    # Check if the cell_index exists in the dictionary
+    if cell_index not in dictionary:
+        return f"Το κελί '{cell_index}' δεν υπάρχει.", False #δεν υπαρχει 
+    elif not dictionary[cell_index]:
+        return f"Το κελί '{cell_index}' δεν περιέχει αγωγούς καθώς αυτοί έχουν ανατεθεί σε γειτονικά.", False ###ξαναβαλε
+    else:
+        number = len(dictionary[cell_index])
+        return f"Το κελί '{cell_index}' περιέχει '{number}' αγωγούς.", True #προχωραμε 
+        
+
+def manipulate_opt_results(edges, X, F, pipe_table_trep, pipes_gdf_cell):
+    # Simulate a Pareto front for demonstration
+    f1_values = F[:,0]
+    f2_values = F[:,1]
+
+    kn = KneeLocator(f1_values, f2_values, curve='convex', direction='decreasing')
+
+    # Get the index of the knee point
+    ind_opt = next((i for i, val in enumerate(f1_values) if val == kn.knee), None)
+
+    # Get the optimal X values
+    X_opt = X[ind_opt,:]
+    
+    # Return a shapefile which contains t* and t_opt
+    pipes_gdf_cell['t_star'] = pipe_table_trep['t_rep']
+    pipes_gdf_cell['t_opt'] = X_opt
+    pipes_gdf_cell_merged = pd.merge(pipes_gdf_cell, edges[[ 'LABEL', 'geometry']], on='LABEL', how='left')
+    pipes_gdf_cell_merged = gpd.GeoDataFrame(pipes_gdf_cell_merged, geometry='geometry')
+    pipes_gdf_cell_merged = pipes_gdf_cell_merged.set_crs('EPSG:2100')
+    
+    return pipes_gdf_cell_merged
+
+
+# Define the optimization problem
+class MyProblem(ElementwiseProblem):
+    def __init__(self, pipe_table_trep, p_span, LLCCn, xl, xu):
+        super().__init__(n_var=len(pipe_table_trep.index), n_obj=2, xl=xl, xu=xu)
+        self.pipe_table_trep = pipe_table_trep
+        self.p_span = p_span
+        self.LLCCn = LLCCn
+        self.xl = xl
+        self.xu = xu
+
+
+    def _evaluate(self, x, out, *args, **kwargs):
+
+        lcc_n = lcc_tot_net(x, self.pipe_table_trep, self.p_span)
+        f1 = lcc_n - self.LLCCn
+
+        inv_series = investment_series(x, self.pipe_table_trep, self.p_span)
+        #f2 = inv_series[0].std()
+
+
+        # Calculate the second derivative (approximated by differences of differences)
+        first_diff = np.diff(inv_series[0])
+        second_diff = np.diff(first_diff)
+
+        # Regularization term: sum of squares of the second derivative
+        regularization_term = np.sum(second_diff**2)
+        f2 = regularization_term  # Smaller values indicate a smoother series with less curvature
+
+        out["F"] = [f1, f2]
+
+
+# PART 4 functions
+
+
+def create_subgraph_from_threshold(gdf_cell_path, choose_option, filter_list, figsize=(10, 10), line_width=3):
+    """
+    Creates a subgraph from the edges with 'opt_time' less than or equal to the threshold.
+
+    :param edges: GeoDataFrame representing the edges of the graph.
+    :param threshold: The threshold value for 'opt_time' attribute.
+    :return: A subgraph consisting of edges where 'opt_time' <= threshold.
+    """
+    # Convert shp to GeodataFrame
+    pipes_gdf_cell_merged = gpd.read_file(gdf_cell_path).set_crs('EPSG:2100')
+    
+    ## Convert the GeoDataFrame into a graph
+    ## Load the shapefile as geodataframe
+    graph_cell = momepy.gdf_to_nx(pipes_gdf_cell_merged, approach='primal')
+
+    ## Draw the graph with real coordinates
+    # Extract nodes and edges
+    nodes, edges = momepy.nx_to_gdf(graph_cell)
+    
+    # pick 'time' or 'node' type of selection 
+    if choose_option:
+        # Filter edges based on the threshold
+        red_edges_df = edges[(edges['t_opt'] <= filter_list[1]) & (edges['t_opt'] >= filter_list[0])]
+
+        subgraph = momepy.gdf_to_nx(red_edges_df, approach='primal')
+    else:
+        red_edges_df = edges[edges['ID'].isin(filter_list)]
+        subgraph = momepy.gdf_to_nx(red_edges_df, approach='primal')
+    
+    red_edges_df = red_edges_df.drop(['mm_len','node_start','node_end'],axis=1)
+
+    return subgraph, red_edges_df
+
+
+def calculate_metrics(subgraph, red_edges_df, i):
+    """Calculate the total length and weighted average cost of edges in a subgraph."""
+    total_length, total_weighted_cost = 0, 0
+    for edge in subgraph.edges(data=True):
+        length = edge[2]['USER_L']
+        cost = edge[2]['t_opt']
+        total_length += length
+        total_weighted_cost += cost * length
+        
+        pipe_name = edge[2]['LABEL']
+        red_edges_df.loc[red_edges_df['LABEL'] == pipe_name, 'cluster'] = i
+
+    weighted_average_cost = round(total_weighted_cost / total_length if total_length > 0 else 0,2)
+    return red_edges_df, total_length, weighted_average_cost
+
+
+def analyze_graph(graph, red_edges_df, minimum_length, percent_accept):
+    """Analyze the graph to find connected components and calculate metrics."""
+    S = [graph.subgraph(c).copy() for c in nx.connected_components(graph)]
+
+    total_length_graph, total_weighted_cost_graph = 0, 0
+    for edge in graph.edges(data=True):
+        length = edge[2]['USER_L']
+        cost = edge[2]['t_opt']
+        total_length_graph += length
+        total_weighted_cost_graph += cost * length
+
+    overall_weighted_average_cost = round(total_weighted_cost_graph / total_length_graph if total_length_graph > 0 else 0,2)
+
+    results = []
+    total_length_all = 0
+    
+    # create a column in red edges df with clusters
+    red_edges_df['group'] = 0 
+    i = 1 
+    for component in S:
+        red_edges_df, total_length, weighted_average_cost = calculate_metrics(component, red_edges_df, i)
+        results.append({
+            #'Path Edges': list(component.edges),
+            'Total Length': total_length,
+            'Average Time': weighted_average_cost
+        })
+        total_length_all += total_length
+        i =i+ 1
+        # print(i)
+
+    results_df = pd.DataFrame(results)
+    results_df['Meets Minimum Length'] = results_df['Total Length'].apply(lambda x: x > minimum_length)
+
+    total_length_under = results_df[results_df['Meets Minimum Length'] == False]['Total Length'].sum()
+    accept_condition = (total_length_under / total_length_all) <= percent_accept
+
+    return red_edges_df, results_df, overall_weighted_average_cost, total_length_under, accept_condition, round(1 - total_length_under / total_length_all,3), total_length_all
+
+
+def export_df_and_sentence_to_file(red_edges_df, results_df, total_length_under, row_number_to_keep, shp_name, overall_weighted_average_cost, accept_condition, perc, total_length_all, distance, filename):
+      
+    # Convert the DataFrame to string
+    
+    results_df.index.name = 'group'
+    results_df.index = range(1, len(results_df) + 1)
+    results_df.index.name = 'group'
+    results_df = results_df.rename(columns={"Meets Minimum Length": f"Over {distance} m"})
+    df_string = results_df.to_string(justify='justify-all')
+
+    # Specific sentence to add
+    sentence_1 = f'Έχετε επιλέξει {red_edges_df.shape[0]} αγωγούς από το shapefile του κελιού.'
+    
+    sentence_2 = f'Οι αγωγοί έχουν χωριστεί σε {results_df.shape[0]} ομάδες (groups) όπου δημιουργούν συνεχή τμήματα. Παρακάτω φαίνονται τα χαρακτηριστικά τους:'
+    
+    sentence_3 = f'Από τα {total_length_all} m των επιλεγμένων αγωγών, συνολικά {total_length_all-total_length_under} m αγωγών βρίσκονται σε συνέχη κομμάτια άνω των {distance} m.'
+    
+    sentence_4 = f'Αυτό αντιστοιχεί στο {perc*100} % των επιλεγμένων αγωγών.'
+    
+    # Concatenate DataFrame string with the specific sentence
+    output_string = sentence_1 +'\n\n'+ sentence_2 +'\n\n'+ df_string + '\n\n' + sentence_3 + '\n\n' + sentence_4
+    
+    # Write the concatenated string to a text file
+    with open(filename, 'w') as file:
+        file.write(output_string)
