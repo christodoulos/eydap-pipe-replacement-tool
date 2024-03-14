@@ -5,6 +5,7 @@ from src.tools import *
 import ctypes
 import platform
 import warnings
+from typing import List
 
 
 warnings.filterwarnings("ignore", category=FutureWarning)
@@ -58,7 +59,6 @@ class PipeReplacementTool:
         self.network_shapefile = None
         self.damage_shapefile = None
         self.df_metrics = None
-        self.pipes_gdf_cell_merged = None
         self.edges = None
         self.unique_pipe_materials_names = None
         self.pipe_materials = {}
@@ -530,21 +530,20 @@ class PipeReplacementTool:
                         )
                         sg.Print('', do_not_reroute_stdout=False)
                         
-                        print("Before optimization")
+                        print("Optimization started. This may take a while.")
                         res = minimize(problem,
                                     algorithm,
                                     seed=1,
                                     # termination=('n_gen', n_gen), # p.x. 5 
-                                    termination=('n_gen', 2),
+                                    termination=('n_gen', 1),
                                     save_history=True,
                                     verbose=True)
-                        print("After optimization")
+                        print("Optimization finished. You can close this window and proceed to the next step.")
                         X = res.X
                         F = res.F
 
                         # Run function for making final geodataframe
                         pipes_gdf_cell_merged = manipulate_opt_results(self.edges, X, F, pipe_table_trep, pipes_gdf_cell)
-                        self.pipes_gdf_cell_merged = pipes_gdf_cell_merged
 
                         pre_path = os.path.join(
                             self.projects_folder,
@@ -562,20 +561,112 @@ class PipeReplacementTool:
     def step4(self):
         layout = [
             [sg.Text("Select Cell Priority shapefile")],
-            [sg.Input(), sg.FileBrowse(file_types=(("Shapefiles", "*.shp"),), key="-Cell Priority-")],
+            [sg.Input(key='-Cell Priority-'), sg.FileBrowse(file_types=(("Shapefiles", "*.shp"),),)],
+            [sg.Button("Proceed with shapefile", key="-Proceed-")]
             
-            [sg.Column([[sg.Button("Calculate")]], justification="center")],
         ]
 
         step4_window = sg.Window("Step 4", layout)
 
         while True:
             event, values = step4_window.read()
+            
             if event == sg.WINDOW_CLOSED:
                 break
-            if event == "Calculate":
-                cell_priority_shapefile = values["-Cell Priority-"]
-                print("Cell Priority shapefile: ", cell_priority_shapefile)
+            
+            if event == '-Proceed-' :
+                
+                step4_window["-Proceed-"].update(visible=False)
+                step4_window["Browse"].update(visible=False)
+                
+                file_path = values["-Cell Priority-"]
+                
+                if file_path and os.path.exists(file_path):
+                
+                    step4_window["-Cell Priority-"].update(disabled=True)
+                    
+                    new_elements = [[sg.Button("Proceed with time", key="-ProceedTime-"), sg.Button("Proceed with pipe IDs", key="-ProceedPipes-")]]
+
+                    step4_window.extend_layout(step4_window, new_elements)
+                    step4_window.refresh()
+               
+            if event == '-ProceedTime-' or event == '-ProceedPipes-':
+                step4_window["-ProceedTime-"].update(visible=False)
+                step4_window["-ProceedPipes-"].update(visible=False)
+                
+                
+            if event == "-ProceedTime-":
+                proceedTime = True
+
+                new_elements = [
+                    [sg.Push(), sg.Text("Start Time:"), sg.Input(key="-Low Time-")],
+                    [sg.Push(), sg.Text("End Time:"), sg.Input(key="-Up Time-")],
+                ]
+
+            if event == "-ProceedPipes-":
+                proceedTime = False
+                pipe_ids: List[int] = gpd.read_file(file_path)["ID"].to_list()
+                
+                checkboxes = [
+                    [sg.Checkbox(f"Pipe ID: {pipe_id}", key=f"Pipe {pipe_id}")]
+                    for pipe_id in pipe_ids
+                ]
+                
+                new_elements = [[sg.Column(checkboxes, scrollable=True, vertical_scroll_only=True, size=(200, 400), justification="center")]]
+
+            if event == '-ProceedTime-' or event == '-ProceedPipes-':
+                new_elements.append([sg.Push(), sg.Text("Contract Work Min Distance (m):"), sg.Input(key="-Min Distance-")]) 
+                new_elements.append([sg.Push(), sg.Text("Output shapefile name"), sg.Input(default_text="custom_selection_replacement_v2", key="-Shape File Name-")]) 
+                new_elements.append([sg.Column([[sg.Button("Calculate", key="-CALCULATE-")]], justification="center")])
+                step4_window.extend_layout(step4_window, new_elements)
+                step4_window.refresh()
+                
+            if event == "-CALCULATE-":
+                
+                if not values['-Min Distance-']:
+                    sg.popup("Please insert a minimum distance and try again.")
+                    continue
+                
+                
+                min_contract_distance = float(values["-Min Distance-"])
+                row_number_to_keep = file_path.split("/")[-2].split("_")[-1]
+
+                if proceedTime:
+                    
+                    if not values["-Low Time-"] or not values["-Up Time-"]:
+                        sg.popup("Please insert both start and end time and try again.")
+                        continue
+                    
+                    low_time = float(values["-Low Time-"])
+                    up_time = float(values["-Up Time-"])
+                    filter_list = [low_time, up_time]
+                    
+                else:                    
+                    # Read the selected pipe IDs
+                    selected_pipe_ids = [int(key.split(" ")[-1]) for key, value in values.items() if (value and key.startswith("Pipe "))]
+                    
+                    if not selected_pipe_ids:
+                        sg.popup("Please select at least one pipe and try again.")
+                        continue
+                    
+                    # print(selected_pipe_ids, min_contract_distance)
+                    filter_list = selected_pipe_ids
+                    
+                red_subgraph, red_edges_df = create_subgraph_from_threshold(file_path, proceedTime, filter_list)
+                red_edges_df, results_df, overall_weighted_average_cost, total_length_under, accept_condition, perc, total_length_all = analyze_graph(red_subgraph, red_edges_df, min_contract_distance, 0.9)
+               
+                shp_name = values["-Shape File Name-"]
+                text_filename = os.path.join(
+                            self.projects_folder,
+                            self.project_name,
+                            "Cell_optimization_results",
+                            f"Cell_Priority_{row_number_to_keep}",
+                            f"{shp_name}.txt"
+                        )
+                export_df_and_sentence_to_file(red_edges_df, results_df, total_length_under, row_number_to_keep, shp_name, overall_weighted_average_cost, accept_condition, perc, total_length_all, min_contract_distance, text_filename)
+
+                
+                
 
 
     def create_new_project(self):

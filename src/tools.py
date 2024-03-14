@@ -1227,5 +1227,5 @@ def export_df_and_sentence_to_file(red_edges_df, results_df, total_length_under,
     output_string = sentence_1 +'\n\n'+ sentence_2 +'\n\n'+ df_string + '\n\n' + sentence_3 + '\n\n' + sentence_4
     
     # Write the concatenated string to a text file
-    with open(filename, 'w') as file:
+    with open(filename, 'w', encoding='utf-8') as file:
         file.write(output_string)
