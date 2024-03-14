@@ -77,7 +77,6 @@ class PipeReplacementTool:
         sg.set_options(icon="icon.ico")
         while True:
             event, values = self.window.read()
-            print(event)
             if event == sg.WINDOW_CLOSED:
                 break
             if event == "New Project":
@@ -87,7 +86,7 @@ class PipeReplacementTool:
                 self.window["-STEP1-"].update(disabled=False)
                 
                 if self.step1_completed:  # workaround to keep the step 1 button disabled
-                    self.window["-STEP1-"].update(disabled=False)
+                    self.window["-STEP1-"].update(disabled=True)
 
             if event == "-STEP1-":
                 self.step1()
@@ -221,9 +220,7 @@ class PipeReplacementTool:
                     for material_name in self.unique_pipe_materials_names:
                         self.pipe_materials[material_name] = self.const_pipe_materials.get(material_name)
                     
-                    print("MATERIALS" , self.pipe_materials)
                     self.step1_result_shapefile = output_path
-                    print(self.step1_result_shapefile)
 
                     # Update the main window to enable the next step
                     self.window["-STEP1-"].update(disabled=True)
@@ -360,9 +357,6 @@ class PipeReplacementTool:
                         weight_failures=failures_weight,
                         output_path=output_path,
                     )
-                    print("Results: ", results)
-                    print("Best square size: ", best_square_size)
-
                     step2_window["-CALC Message-"].update(visible=False)
 
                     # Passing the local variables to the class variables
@@ -403,9 +397,7 @@ class PipeReplacementTool:
                         "Fishnet_Grids",
                         f"{self.select_square_size}_fishnets_sorted.shp",
                     )
-                
-                print("Sorted fishnet df: ", sorted_fishnet_df)
-                print("Results pipe clusters: ", results_pipe_clusters)
+
                 step2_window["-CONTINUE-"].update(visible=False)
                 step2_window["-PROCEED-"].update(visible=True)
                 step2_window.refresh()
@@ -507,7 +499,6 @@ class PipeReplacementTool:
                                                                 row_number_to_keep, self.results_pipe_clusters, self.pipe_materials)
 
                         pipe_table_trep, LLCCn, ann_budg, xl, xu = calculate_investment_timeseries(pipes_gdf_cell, p_span, 50, a_rel)
-                        print("Pre-optimization part is done.")
                         
                         # Run optimization
                         # number of pipes in this cell
@@ -589,12 +580,11 @@ class PipeReplacementTool:
 
                     step4_window.extend_layout(step4_window, new_elements)
                     step4_window.refresh()
-               
+            
             if event == '-ProceedTime-' or event == '-ProceedPipes-':
                 step4_window["-ProceedTime-"].update(visible=False)
                 step4_window["-ProceedPipes-"].update(visible=False)
-                
-                
+            
             if event == "-ProceedTime-":
                 proceedTime = True
 
@@ -618,23 +608,27 @@ class PipeReplacementTool:
                 new_elements.append([sg.Push(), sg.Text("Contract Work Min Distance (m):"), sg.Input(key="-Min Distance-")]) 
                 new_elements.append([sg.Push(), sg.Text("Output shapefile name"), sg.Input(default_text="custom_selection_replacement_v2", key="-Shape File Name-")]) 
                 new_elements.append([sg.Column([[sg.Button("Calculate", key="-CALCULATE-")]], justification="center")])
+                new_elements.append([sg.Text("File is saved successfully!", key="-Success Message-", visible=False)])
                 step4_window.extend_layout(step4_window, new_elements)
                 step4_window.refresh()
                 
             if event == "-CALCULATE-":
-                
+                step4_window["-CALCULATE-"].update(disabled=True)
+                step4_window["-Success Message-"].update(visible=False)
+                step4_window.refresh()
+    
                 if not values['-Min Distance-']:
                     sg.popup("Please insert a minimum distance and try again.")
+                    step4_window["-CALCULATE-"].update(disabled=False)
                     continue
-                
-                
+
                 min_contract_distance = float(values["-Min Distance-"])
                 row_number_to_keep = file_path.split("/")[-2].split("_")[-1]
 
-                if proceedTime:
-                    
+                if proceedTime:                    
                     if not values["-Low Time-"] or not values["-Up Time-"]:
                         sg.popup("Please insert both start and end time and try again.")
+                        step4_window["-CALCULATE-"].update(disabled=False)
                         continue
                     
                     low_time = float(values["-Low Time-"])
@@ -647,9 +641,8 @@ class PipeReplacementTool:
                     
                     if not selected_pipe_ids:
                         sg.popup("Please select at least one pipe and try again.")
-                        continue
-                    
-                    # print(selected_pipe_ids, min_contract_distance)
+                        step4_window["-CALCULATE-"].update(disabled=False)
+                        continue                    
                     filter_list = selected_pipe_ids
                     
                 red_subgraph, red_edges_df = create_subgraph_from_threshold(file_path, proceedTime, filter_list)
@@ -664,9 +657,9 @@ class PipeReplacementTool:
                             f"{shp_name}.txt"
                         )
                 export_df_and_sentence_to_file(red_edges_df, results_df, total_length_under, row_number_to_keep, shp_name, overall_weighted_average_cost, accept_condition, perc, total_length_all, min_contract_distance, text_filename)
-
-                
-                
+                step4_window["-CALCULATE-"].update(disabled=False)
+                step4_window["-Success Message-"].update(visible=True)
+                step4_window.refresh()
 
 
     def create_new_project(self):
@@ -693,7 +686,6 @@ class PipeReplacementTool:
                 damage_shapefile_path = values[2]
 
                 if is_valid_project_name(project_name):
-                    print("Creating new project:", project_name)
                     new_project_window.close()
 
                     project_folder = os.path.join(self.projects_folder, project_name)
