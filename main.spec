@@ -1,12 +1,19 @@
 # -*- mode: python ; coding: utf-8 -*-
+import pkgutil
 
+import rasterio
+
+# list all rasterio and fiona submodules, to include them in the package
+additional_packages = ["autograd"]
+for package in pkgutil.iter_modules(rasterio.__path__, prefix="rasterio."):
+    additional_packages.append(package.name)
 
 a = Analysis(
     ['main.py'],
     pathex=[],
     binaries=[],
-    datas=[],
-    hiddenimports=[],
+    datas=[('C:\\Users\\christodoulos\\Workspace\\eydap-pipe-replacement-tool\\venv\\Lib\\site-packages\\rasterio\\proj_data', 'rasterio\\proj_data')],
+    hiddenimports=additional_packages,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
