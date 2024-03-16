@@ -38,7 +38,7 @@ class PipeReplacementTool:
         self.step2_completed = False
 
         self.window = sg.Window(
-            "ΕΥΔΑΠ :: Pipe Replacement Tool",
+            "EYDAP :: Pipe Replacement Tool",
             self.layout,
             resizable=False,
             finalize=True,
@@ -372,7 +372,6 @@ class PipeReplacementTool:
                     step2_window["-Custom Square Size-"].update(best_square_size, range=bounds, visible=True)
                     step2_window["-CONTINUE-"].update(visible=True)
 
-                    ### (εδώ να βγαίνει μήνυμα που να τον ρωτάει αν θα κρατάει αυτό ή να βάλει δικό του)
                     self.select_square_size = best_square_size
 
             if event == "-CONTINUE-":
