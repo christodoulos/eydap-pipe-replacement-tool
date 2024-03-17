@@ -2,10 +2,13 @@
 import pkgutil
 
 import rasterio
+import pymoo
 
 # list all rasterio and fiona submodules, to include them in the package
-additional_packages = ["autograd"]
+additional_packages = ["autograd", "pymoo.cython.non_dominated_sorting"]
 for package in pkgutil.iter_modules(rasterio.__path__, prefix="rasterio."):
+    additional_packages.append(package.name)
+for package in pkgutil.iter_modules(pymoo.__path__, prefix="pymoo."):
     additional_packages.append(package.name)
 
 a = Analysis(

@@ -9,6 +9,7 @@ from typing import List
 
 
 warnings.filterwarnings("ignore", category=FutureWarning)
+warnings.filterwarnings("ignore", category=UserWarning)
 if platform.system() == "Windows":
     ctypes.windll.shcore.SetProcessDpiAwareness(1)
 
@@ -178,54 +179,60 @@ class PipeReplacementTool:
                     step1_window["-CALC Message-"].update(visible=True)
                     step1_window.refresh()
 
-                    gdf, G, nodes, edges, df_metrics = process_shapefile(
-                        self.network_shapefile,
-                        closeness_weight,
-                        betweenness_weight,
-                        bridge_weight,
-                        os.path.join(self.projects_folder, self.project_name, ""),
-                    )
-                    self.edges = edges
-                    
-                    plot_metrics(
-                        gdf,
-                        G,
-                        nodes,
-                        edges,
-                        ["closeness", "betweenness", "bridge", "composite"],
-                        8,
-                        False,
-                        os.path.join(self.projects_folder, self.project_name, ""),
-                    )
-                    output_path = os.path.join(
-                        self.projects_folder,
-                        self.project_name,
-                        "shp_with_metrics",
-                        "Pipes_WG_export_with_metrics.shp",
-                    )
-                    os.makedirs(os.path.dirname(output_path), exist_ok=True)
-                    save_edge_gdf_shapefile(
-                        edges,
-                        output_path,
-                    )
-                    
-                    step1_window["-CALCULATE-"].update(visible=False)
-                    step1_window["-CALC Message-"].update(visible=False)
-                    step1_window["-PROCEED-"].update(visible=True)
-                    step1_window.refresh()
-                    self.step1_completed = True
-                    self.df_metrics = df_metrics
-                    self.unique_pipe_materials_names = df_metrics['MATERIAL'].unique()
-                    
-                    for material_name in self.unique_pipe_materials_names:
-                        self.pipe_materials[material_name] = self.const_pipe_materials.get(material_name)
-                    
-                    self.step1_result_shapefile = output_path
+                    step1_window.perform_long_operation(lambda: self.step1_calculations(closeness_weight, betweenness_weight, bridge_weight, os.path.join(self.projects_folder, self.project_name, "")), "-STEP1 CALCULATIONS-")
+            
+            if event == "-STEP1 CALCULATIONS-":
+                gdf, G, nodes, edges, df_metrics, output_path = values["-STEP1 CALCULATIONS-"]
+                step1_window["-CALCULATE-"].update(visible=False)
+                step1_window["-CALC Message-"].update(visible=False)
+                step1_window["-PROCEED-"].update(visible=True)
+                step1_window.refresh()
+                self.step1_completed = True
+                self.df_metrics = df_metrics
+                self.unique_pipe_materials_names = df_metrics['MATERIAL'].unique()
+                
+                for material_name in self.unique_pipe_materials_names:
+                    self.pipe_materials[material_name] = self.const_pipe_materials.get(material_name)
+                
+                self.step1_result_shapefile = output_path
 
-                    # Update the main window to enable the next step
-                    self.window["-STEP1-"].update(disabled=True)
-                    self.window["-STEP2-"].update(disabled=False)
+                # Update the main window to enable the next step
+                self.window["-STEP1-"].update(disabled=True)
+                self.window["-STEP2-"].update(disabled=False)
 
+    def step1_calculations(self, closeness_weight, betweenness_weight, bridge_weight, output_path):
+        gdf, G, nodes, edges, df_metrics = process_shapefile(
+            self.network_shapefile,
+            closeness_weight,
+            betweenness_weight,
+            bridge_weight,
+            output_path,
+        )
+        self.edges = edges
+        plot_metrics(
+            gdf,
+            G,
+            nodes,
+            edges,
+            ["closeness", "betweenness", "bridge", "composite"],
+            8,
+            False,
+            output_path,
+        )
+        output_path = os.path.join(
+            self.projects_folder,
+            self.project_name,
+            "shp_with_metrics",
+            "Pipes_WG_export_with_metrics.shp",
+        )
+        os.makedirs(os.path.dirname(output_path), exist_ok=True)
+        save_edge_gdf_shapefile(
+            edges,
+            output_path,
+        )
+        return gdf, G, nodes, edges, df_metrics, output_path
+
+        
     def step2(self):
         layout = [
             [
@@ -347,16 +354,12 @@ class PipeReplacementTool:
                         "Fishnet_Grids",
                         "",
                     )
+                    
+                    step2_window.perform_long_operation(lambda: self.step2_spatial_autocorrelation_analysis(weight_avg_combined_metric, failures_weight, cell_lower_bound, cell_upper_bound, output_path), "-STEP2 SPATIAL AUTOCORRELATION-") 
 
-                    results, best_square_size = spatial_autocorrelation_analysis(
-                        pipe_shapefile_path=self.step1_result_shapefile,
-                        failures_shapefile_path=self.damage_shapefile,
-                        lower_bound_cell=cell_lower_bound,
-                        upper_bound_cell=cell_upper_bound,
-                        weight_avg_combined_metric=weight_avg_combined_metric,
-                        weight_failures=failures_weight,
-                        output_path=output_path,
-                    )
+            if event == "-STEP2 SPATIAL AUTOCORRELATION-":
+                    results, best_square_size = values["-STEP2 SPATIAL AUTOCORRELATION-"]
+
                     step2_window["-CALC Message-"].update(visible=False)
 
                     # Passing the local variables to the class variables
@@ -376,15 +379,10 @@ class PipeReplacementTool:
 
             if event == "-CONTINUE-":
                 self.select_square_size = values["-Custom Square Size-"]
-                # Output --> σώζεται ένα shp file στο output path
-                sorted_fishnet_df, results_pipe_clusters, fishnet_index = local_spatial_autocorrelation(
-                    pipe_shapefile_path=self.step1_result_shapefile,
-                    failures_shapefile_path=self.damage_shapefile,
-                    weight_avg_combined_metric=self.weight_avg_combined_metric,
-                    weight_failures=self.weight_failures,
-                    select_square_size=self.select_square_size,
-                    output_path=self.step2_output_path,
-                )
+                step2_window.perform_long_operation(lambda: self.step2_local_spatial_autocorrelation(weight_avg_combined_metric, failures_weight, self.select_square_size, output_path), "-STEP2 LOCAL SPATIAL AUTOCORRELATION-")
+                
+            if event == "-STEP2 LOCAL SPATIAL AUTOCORRELATION-":
+                sorted_fishnet_df, results_pipe_clusters, fishnet_index = values["-STEP2 LOCAL SPATIAL AUTOCORRELATION-"]
 
                 self.sorted_fishnet_df = sorted_fishnet_df
                 self.results_pipe_clusters = results_pipe_clusters
@@ -408,6 +406,28 @@ class PipeReplacementTool:
                 self.window["-STEP3-"].update(disabled=False)
                 self.window["-STEP4-"].update(disabled=False)  # enable step 4 together with step 3 because optimization takes too long
 
+    def step2_spatial_autocorrelation_analysis(self, weight_avg_combined_metric, weight_failures, cell_lower_bound, cell_upper_bound, output_path):
+        results, best_square_size = spatial_autocorrelation_analysis(
+            pipe_shapefile_path=self.step1_result_shapefile,
+            failures_shapefile_path=self.damage_shapefile,
+            lower_bound_cell=cell_lower_bound,
+            upper_bound_cell=cell_upper_bound,
+            weight_avg_combined_metric=weight_avg_combined_metric,
+            weight_failures=weight_failures,
+            output_path=output_path,
+        )
+        return results, best_square_size
+    
+    def step2_local_spatial_autocorrelation(self, weight_avg_combined_metric, weight_failures, select_square_size, output_path):
+        sorted_fishnet_df, results_pipe_clusters, fishnet_index = local_spatial_autocorrelation(
+            pipe_shapefile_path=self.step1_result_shapefile,
+            failures_shapefile_path=self.damage_shapefile,
+            weight_avg_combined_metric=weight_avg_combined_metric,
+            weight_failures=weight_failures,
+            select_square_size=select_square_size,
+            output_path=output_path,
+        )
+        return sorted_fishnet_df, results_pipe_clusters, fishnet_index
 
     def step3(self):
         self.results_pipe_clusters = optimize_pipe_clusters(self.results_pipe_clusters, self.df_metrics, self.sorted_fishnet_df)
@@ -521,32 +541,49 @@ class PipeReplacementTool:
                         sg.Print('', do_not_reroute_stdout=False)
                         
                         print("Optimization started. This may take a while.")
-                        res = minimize(problem,
-                                    algorithm,
-                                    seed=1,
-                                    # termination=('n_gen', n_gen), # p.x. 5 
-                                    termination=('n_gen', 1),
-                                    save_history=True,
-                                    verbose=True)
-                        print("Optimization finished. You can close this window and proceed to the next step.")
-                        X = res.X
-                        F = res.F
+                        
+                        seed = 1
+                        # termination = ('n_gen', n_gen)
+                        termination = ('n_gen', 1)
+                        save_history = True
+                        verbose = True
+                        step3_window.perform_long_operation(
+                            lambda: self.step3_minimize(problem, algorithm), "-OPTIMIZATION-")
+            
+            if event == "-OPTIMIZATION-":
+                res = values["-OPTIMIZATION-"]
+                # res = minimize(problem,
+                #             algorithm,
+                #             seed=1,
+                #             # termination=('n_gen', n_gen), # p.x. 5 
+                #             termination=('n_gen', 1),
+                #             save_history=True,
+                #             verbose=True)
+                print("Optimization finished. You can close this window and proceed to the next step.")
+                X = res.X
+                F = res.F
 
-                        # Run function for making final geodataframe
-                        pipes_gdf_cell_merged = manipulate_opt_results(self.edges, X, F, pipe_table_trep, pipes_gdf_cell)
+                # Run function for making final geodataframe
+                pipes_gdf_cell_merged = manipulate_opt_results(self.edges, X, F, pipe_table_trep, pipes_gdf_cell)
 
-                        pre_path = os.path.join(
-                            self.projects_folder,
-                            self.project_name,
-                            "Cell_optimization_results",
-                            f"Cell_Priority_{row_number_to_keep}"
-                        )
-                        # Save the shape file into Cell_optimization_results/Cell_Priority_#
-                        pipes_gdf_cell_merged.to_file(pre_path + f'/Priority_{row_number_to_keep}_cell_optimal_replacement.shp')
-                        step3_window["-Calculation Message-"].update(f"Calculation for Cell {row_number_to_keep} is finished.\nContinue with another cell or close the window and proceed to step 4.")
+                pre_path = os.path.join(
+                    self.projects_folder,
+                    self.project_name,
+                    "Cell_optimization_results",
+                    f"Cell_Priority_{row_number_to_keep}"
+                )
+                # Save the shape file into Cell_optimization_results/Cell_Priority_#
+                pipes_gdf_cell_merged.to_file(pre_path + f'/Priority_{row_number_to_keep}_cell_optimal_replacement.shp')
+                step3_window["-Calculation Message-"].update(f"Calculation for Cell {row_number_to_keep} is finished.\nContinue with another cell or close the window and proceed to step 4.")
                         
                 step3_window["-Calculate Cell-"].update(disabled=False)
 
+    def step3_minimize(self, problem, algorithm):
+        def my_callback(algorithm):
+            generation = algorithm.n_gen
+            best_objective_value = algorithm.pop.get("F").min()
+            print(f"Generation {generation}: Best objective value so far is {best_objective_value}")
+        return minimize(problem, algorithm, seed=1, termination=('n_gen', 1), save_history=True, verbose=True, callback=my_callback)
 
     def step4(self):
         layout = [
